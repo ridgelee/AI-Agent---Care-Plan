@@ -152,6 +152,52 @@ const styles = {
     borderRadius: '3px',
     fontSize: '13px',
   },
+  // Search styles
+  searchSection: {
+    background: 'white',
+    padding: '20px',
+    borderRadius: '8px',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+    marginBottom: '20px',
+  },
+  searchRow: {
+    display: 'flex',
+    gap: '10px',
+  },
+  searchInput: {
+    flex: 1,
+    padding: '10px 12px',
+    border: '1px solid #ddd',
+    borderRadius: '4px',
+    fontSize: '14px',
+  },
+  searchButton: {
+    background: '#6c757d',
+    color: 'white',
+    border: 'none',
+    padding: '10px 20px',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    fontSize: '14px',
+  },
+  searchResults: {
+    marginTop: '15px',
+  },
+  searchResultItem: {
+    padding: '12px',
+    borderBottom: '1px solid #eee',
+    cursor: 'pointer',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  searchResultItemHover: {
+    background: '#f8f9fa',
+  },
+  divider: {
+    borderTop: '2px solid #dee2e6',
+    margin: '30px 0',
+  },
 }
 
 function App() {
@@ -179,6 +225,11 @@ function App() {
   const [checkingStatus, setCheckingStatus] = useState(false)
   const [result, setResult] = useState(null)
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState(null)
+  const [searching, setSearching] = useState(false)
+
   const handleChange = (section, field, value) => {
     setFormData(prev => ({
       ...prev,
@@ -186,6 +237,43 @@ function App() {
         ? { ...prev[section], [field]: value }
         : value
     }))
+  }
+
+  // POST /api/orders/search/ - Search orders
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) {
+      alert('Please enter search term')
+      return
+    }
+
+    setSearching(true)
+    try {
+      const response = await fetch('/api/orders/search/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: searchQuery }),
+      })
+      const data = await response.json()
+      setSearchResults(data)
+    } catch (error) {
+      alert('Search failed: ' + error.message)
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  // Click search result to load order details
+  const handleSelectOrder = async (orderId) => {
+    setCheckingStatus(true)
+    try {
+      const response = await fetch(`/api/orders/${orderId}/`)
+      const data = await response.json()
+      setResult(data)
+    } catch (error) {
+      setResult({ status: 'failed', error: { message: error.message } })
+    } finally {
+      setCheckingStatus(false)
+    }
   }
 
   // POST /api/orders/ - Submit form and get order_id
@@ -274,9 +362,92 @@ function App() {
     }
   }
 
+  const getStatusBadge = (status) => {
+    const colors = {
+      pending: { bg: '#fff3cd', color: '#856404' },
+      processing: { bg: '#cce5ff', color: '#004085' },
+      completed: { bg: '#d4edda', color: '#155724' },
+      failed: { bg: '#f8d7da', color: '#721c24' },
+    }
+    const style = colors[status] || { bg: '#eee', color: '#666' }
+    return (
+      <span style={{
+        background: style.bg,
+        color: style.color,
+        padding: '2px 8px',
+        borderRadius: '3px',
+        fontSize: '12px',
+      }}>
+        {status}
+      </span>
+    )
+  }
+
   return (
     <div style={styles.container}>
       <h1 style={styles.header}>Care Plan Generator</h1>
+
+      {/* Search Section */}
+      <div style={styles.searchSection}>
+        <h2 style={styles.sectionTitle}>Search Orders</h2>
+        <div style={styles.searchRow}>
+          <input
+            style={styles.searchInput}
+            type="text"
+            placeholder="Search by Order ID, Patient Name, MRN, or Medication..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+          />
+          <button
+            style={searching ? { ...styles.searchButton, ...styles.buttonDisabled } : styles.searchButton}
+            onClick={handleSearch}
+            disabled={searching}
+          >
+            {searching ? 'Searching...' : 'Search'}
+          </button>
+        </div>
+
+        {/* Search Results */}
+        {searchResults && (
+          <div style={styles.searchResults}>
+            <p style={{ marginBottom: '10px', color: '#666' }}>
+              Found {searchResults.count} order(s)
+            </p>
+            {searchResults.orders.map((order) => (
+              <div
+                key={order.order_id}
+                style={styles.searchResultItem}
+                onClick={() => handleSelectOrder(order.order_id)}
+                onMouseEnter={(e) => e.currentTarget.style.background = '#f8f9fa'}
+                onMouseLeave={(e) => e.currentTarget.style.background = 'white'}
+              >
+                <div>
+                  <span style={{ fontFamily: 'monospace', marginRight: '15px' }}>
+                    {order.order_id.substring(0, 8)}...
+                  </span>
+                  <strong>{order.patient_name}</strong>
+                  <span style={{ color: '#666', marginLeft: '10px' }}>
+                    MRN: {order.patient_mrn}
+                  </span>
+                  <span style={{ color: '#666', marginLeft: '10px' }}>
+                    {order.medication}
+                  </span>
+                </div>
+                <div>
+                  {getStatusBadge(order.status)}
+                  <span style={{ color: '#999', marginLeft: '10px', fontSize: '12px' }}>
+                    {new Date(order.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Divider */}
+      <div style={styles.divider}></div>
 
       <form style={styles.form} onSubmit={handleSubmit}>
         {/* Patient Section */}

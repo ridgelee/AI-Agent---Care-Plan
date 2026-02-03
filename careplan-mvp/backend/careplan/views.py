@@ -5,6 +5,7 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from django.utils import timezone
+from django.db.models import Q
 import json
 import anthropic
 import threading
@@ -238,3 +239,37 @@ class OrderDownloadView(View):
         response = HttpResponse(content, content_type='text/plain')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class OrderSearchView(View):
+    """POST /api/orders/search/ - Search orders"""
+
+    def post(self, request):
+        data = json.loads(request.body)
+        query = data.get('query', '').strip()
+
+        # Build Q object for OR search
+        orders = Order.objects.filter(
+            Q(id__icontains=query) |
+            Q(medication_name__icontains=query) |
+            Q(patient__mrn__icontains=query) |
+            Q(patient__first_name__icontains=query) |
+            Q(patient__last_name__icontains=query)
+        ).select_related('patient').order_by('-created_at')[:20]
+
+        results = []
+        for order in orders:
+            results.append({
+                'order_id': str(order.id),
+                'status': order.status,
+                'patient_name': f"{order.patient.first_name} {order.patient.last_name}",
+                'patient_mrn': order.patient.mrn,
+                'medication': order.medication_name,
+                'created_at': order.created_at.isoformat()
+            })
+
+        return JsonResponse({
+            'count': len(results),
+            'orders': results
+        })
