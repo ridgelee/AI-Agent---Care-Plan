@@ -1,8 +1,15 @@
 # Care Plan 自动生成系统 - 设计文档
 
-**版本**: 1.0
-**日期**: 2026-02-01
+**版本**: 1.1
+**日期**: 2026-02-02
 **状态**: 草稿
+
+## 更新日志
+
+| 版本 | 日期 | 更新内容 |
+|------|------|----------|
+| 1.1 | 2026-02-02 | • 明确医疗工作人员输入字段说明<br>• 重新设计核心 API（POST 创建订单 + GET 查询状态）<br>• 详细说明异步处理流程和状态流转<br>• 更新数据库 Schema（添加订单状态字段） |
+| 1.0 | 2026-02-01 | 初始版本 |
 
 ---
 
@@ -79,19 +86,21 @@ CVS Specialty Pharmacy 的药剂师目前需要手动为每位患者创建 Care 
 
 ### 4.1 输入字段
 
-| 字段 | 类型 | 必填 | 验证规则 |
-|------|------|------|----------|
-| Patient First Name | string | ✅ | 非空 |
-| Patient Last Name | string | ✅ | 非空 |
-| Patient DOB | date | ✅ | 有效日期，不能是未来 |
-| Patient MRN | string | ✅ | 6位数字，唯一 |
-| Referring Provider | string | ✅ | 非空 |
-| Referring Provider NPI | string | ✅ | 10位数字 |
-| Primary Diagnosis | string | ✅ | 有效 ICD-10 格式 |
-| Medication Name | string | ✅ | 非空 |
-| Additional Diagnosis | list[string] | ❌ | 有效 ICD-10 格式 |
-| Medication History | list[string] | ❌ | - |
-| Patient Records | string/file | ❌ | 文本或 PDF |
+**医疗工作人员需要输入以下信息**：
+
+| 字段 | 类型 | 必填 | 验证规则 | 说明 |
+|------|------|------|----------|------|
+| Patient First Name | string | ✅ | 非空 | 患者名字 |
+| Patient Last Name | string | ✅ | 非空 | 患者姓氏 |
+| Patient DOB | date | ✅ | 有效日期，不能是未来 | 患者出生日期 |
+| Patient MRN | string | ✅ | 6位数字，唯一 | 医疗记录号 (Medical Record Number) |
+| Referring Provider | string | ✅ | 非空 | 转诊医生姓名 |
+| Referring Provider NPI | string | ✅ | 10位数字 | 国家医生标识号 (National Provider Identifier) |
+| Primary Diagnosis | string | ✅ | 有效 ICD-10 格式 | 主要诊断（ICD-10编码） |
+| Medication Name | string | ✅ | 非空 | 药物名称 |
+| Additional Diagnosis | list[string] | ❌ | 有效 ICD-10 格式 | 其他诊断 |
+| Medication History | list[string] | ❌ | - | 用药史 |
+| Patient Records | string/file | ❌ | 文本或 PDF | 患者病历 |
 
 ### 4.2 数据库 Schema (简化)
 
@@ -125,8 +134,11 @@ CREATE TABLE orders (
     additional_diagnoses JSONB,
     medication_history JSONB,
     patient_records TEXT,
-    status VARCHAR(20) DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT NOW()
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+    error_message TEXT,  -- 记录失败原因
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP  -- Care Plan 完成时间
 );
 
 -- Care Plan 表
@@ -289,52 +301,151 @@ CREATE TABLE care_plans (
 ### 7.3 异步处理流程
 
 ```
-1. 用户提交订单
-       │
-       ▼
-2. Django 验证输入 + 重复检测
-       │
-       ▼
-3. 创建 Order 记录 (status: pending)
-       │
-       ▼
-4. 发送消息到 SQS
-       │
-       ▼
-5. Lambda 消费消息
-       │
-       ▼
-6. 调用 LLM 生成 Care Plan
-       │
-       ▼
-7. 保存 Care Plan，更新 Order (status: completed)
-       │
-       ▼
-8. 用户刷新页面看到结果 / 通知用户
+┌───────────────────────────────────────────────────────────────┐
+│ 步骤 1: 用户提交表单                                            │
+│         POST /api/orders/                                     │
+└─────────────────────────┬─────────────────────────────────────┘
+                          │
+                          ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 步骤 2: Django 后端                                            │
+│   - 验证输入（必填字段、格式校验）                              │
+│   - 重复检测（患者、订单、Provider）                           │
+│   - 创建 Order 记录 (status: "pending")                       │
+│   - 返回 order_id 给前端                                       │
+└─────────────────────────┬─────────────────────────────────────┘
+                          │
+                          ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 步骤 3: 更新状态为 "processing"                                │
+│         发送消息到 SQS 队列                                     │
+└─────────────────────────┬─────────────────────────────────────┘
+                          │
+                          ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 步骤 4: Lambda 函数消费 SQS 消息                               │
+│   - 读取订单数据                                               │
+│   - 构建 LLM Prompt                                           │
+│   - 调用 Claude/OpenAI API                                    │
+└─────────────────────────┬─────────────────────────────────────┘
+                          │
+                    成功  │  失败
+              ┌───────────┴───────────┐
+              ▼                       ▼
+┌─────────────────────────┐  ┌─────────────────────────┐
+│ 步骤 5a: 成功            │  │ 步骤 5b: 失败            │
+│ - 保存 Care Plan 内容   │  │ - 记录错误日志           │
+│ - 更新 Order 状态:      │  │ - 更新 Order 状态:      │
+│   status = "completed"  │  │   status = "failed"     │
+└─────────────────────────┘  └─────────────────────────┘
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 步骤 6: 前端轮询或用户刷新页面                                  │
+│         GET /api/orders/{order_id}                            │
+│   - status = "completed" → 显示 Care Plan                    │
+│   - status = "processing" → 继续等待                         │
+│   - status = "failed" → 显示错误和重试按钮                    │
+└───────────────────────────────────────────────────────────────┘
 ```
+
+**关键点**:
+- 订单创建和 Care Plan 生成是**异步分离**的
+- 用户立即收到 `order_id`，无需等待 LLM 完成
+- 前端通过**轮询** `GET /api/orders/{order_id}` 获取最新状态
+- 生成时间预计 30-90 秒
 
 ---
 
 ## 8. API 设计
 
-### 8.1 核心 Endpoints
+### 8.1 核心 API 工作流程
 
-| Method | Endpoint | 描述 |
-|--------|----------|------|
-| POST | `/api/orders/` | 创建订单，触发 Care Plan 生成 |
-| GET | `/api/orders/{id}/` | 获取订单详情（含 Care Plan 状态） |
-| GET | `/api/orders/{id}/care-plan/` | 获取 Care Plan 内容 |
-| GET | `/api/orders/{id}/care-plan/download/` | 下载 Care Plan 文件 |
-| GET | `/api/patients/` | 患者列表 |
-| GET | `/api/patients/{mrn}/` | 按 MRN 查询患者 |
-| GET | `/api/providers/` | Provider 列表 |
-| POST | `/api/reports/export/` | 导出报告 |
+系统围绕两个核心 API 构建：
 
-### 8.2 重复检测 Response 示例
+```
+步骤 1: 提交订单
+┌────────────────────────────────────────────────────────┐
+│ 用户填写表单，点击提交                                   │
+│ ↓                                                      │
+│ POST /api/orders/                                      │
+│ 发送患者信息（姓名、MRN、Provider、NPI、诊断、药物等）   │
+│ ↓                                                      │
+│ 后端返回: {"order_id": "123", "status": "pending"}    │
+└────────────────────────────────────────────────────────┘
 
-**WARNING 响应 (HTTP 200, 需要确认)**
+步骤 2: 查询状态（第一次）
+┌────────────────────────────────────────────────────────┐
+│ 用户想知道 care plan 是否生成完毕                       │
+│ ↓                                                      │
+│ GET /api/orders/123                                    │
+│ ↓                                                      │
+│ 后端返回: {"order_id": "123", "status": "processing"} │
+└────────────────────────────────────────────────────────┘
+
+步骤 3: 查询状态（第二次）
+┌────────────────────────────────────────────────────────┐
+│ 过一会儿再次查询                                        │
+│ ↓                                                      │
+│ GET /api/orders/123                                    │
+│ ↓                                                      │
+│ 后端返回: {                                            │
+│   "order_id": "123",                                   │
+│   "status": "completed",                               │
+│   "care_plan": {                                       │
+│     "content": "Care Plan 完整内容...",                │
+│     "download_url": "/api/orders/123/download"        │
+│   }                                                    │
+│ }                                                      │
+└────────────────────────────────────────────────────────┘
+```
+
+### 8.2 API 详细规范
+
+#### API 1: 创建订单（提交患者信息）
+
+**Endpoint**: `POST /api/orders/`
+
+**用途**: 接收患者信息，创建订单，触发 Care Plan 异步生成
+
+**请求体**:
 ```json
 {
+  "patient": {
+    "first_name": "John",
+    "last_name": "Doe",
+    "dob": "1980-05-15",
+    "mrn": "123456"
+  },
+  "provider": {
+    "name": "Dr. Jane Smith",
+    "npi": "1234567890"
+  },
+  "medication": {
+    "name": "IVIG",
+    "primary_diagnosis": "G70.00",
+    "additional_diagnoses": ["I10", "K21.9"],
+    "medication_history": ["Pyridostigmine 60mg", "Prednisone 10mg"]
+  },
+  "patient_records": "患者病历文本或文件..."
+}
+```
+
+**成功响应** (HTTP 201):
+```json
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "pending",
+  "message": "订单已创建，Care Plan 正在生成中",
+  "created_at": "2026-02-02T10:30:00Z"
+}
+```
+
+**重复检测警告响应** (HTTP 200):
+```json
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "warning",
   "warnings": [
     {
@@ -344,11 +455,11 @@ CREATE TABLE care_plans (
       "can_override": true
     }
   ],
-  "data": { ... }
+  "message": "订单已创建，但检测到潜在重复"
 }
 ```
 
-**ERROR 响应 (HTTP 400, 阻止提交)**
+**重复检测错误响应** (HTTP 400):
 ```json
 {
   "status": "error",
@@ -361,6 +472,109 @@ CREATE TABLE care_plans (
   ]
 }
 ```
+
+---
+
+#### API 2: 查询订单状态和 Care Plan
+
+**Endpoint**: `GET /api/orders/{order_id}`
+
+**用途**: 根据 order_id 查询 Care Plan 生成状态和结果
+
+**路径参数**:
+- `order_id`: 订单 UUID
+
+**响应 1 - 正在处理** (HTTP 200):
+```json
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "processing",
+  "message": "Care Plan 正在生成中，请稍后刷新",
+  "progress": {
+    "current_step": "调用 LLM 生成中",
+    "estimated_time_remaining": "30-60秒"
+  },
+  "created_at": "2026-02-02T10:30:00Z",
+  "updated_at": "2026-02-02T10:30:15Z"
+}
+```
+
+**响应 2 - 生成完成** (HTTP 200):
+```json
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "completed",
+  "message": "Care Plan 已生成完毕",
+  "patient": {
+    "name": "John Doe",
+    "mrn": "123456"
+  },
+  "medication": "IVIG",
+  "care_plan": {
+    "content": "# Care Plan - John Doe - IVIG\n\n## Problem List...",
+    "generated_at": "2026-02-02T10:31:00Z",
+    "llm_model": "claude-3-sonnet-20240229",
+    "download_url": "/api/orders/550e8400-e29b-41d4-a716-446655440000/download"
+  },
+  "created_at": "2026-02-02T10:30:00Z",
+  "completed_at": "2026-02-02T10:31:00Z"
+}
+```
+
+**响应 3 - 生成失败** (HTTP 200):
+```json
+{
+  "order_id": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "failed",
+  "message": "Care Plan 生成失败",
+  "error": {
+    "code": "LLM_API_ERROR",
+    "message": "LLM API 调用超时，请重试",
+    "retry_allowed": true
+  },
+  "created_at": "2026-02-02T10:30:00Z",
+  "failed_at": "2026-02-02T10:32:00Z"
+}
+```
+
+**订单不存在** (HTTP 404):
+```json
+{
+  "status": "error",
+  "message": "订单不存在",
+  "order_id": "invalid-uuid"
+}
+```
+
+---
+
+### 8.3 订单状态流转
+
+```
+pending → processing → completed
+                ↓
+              failed (可重试)
+```
+
+| 状态 | 描述 | 前端处理 |
+|------|------|----------|
+| `pending` | 订单已创建，等待处理 | 显示"正在排队" |
+| `processing` | LLM 正在生成 Care Plan | 显示"生成中"，轮询或等待 |
+| `completed` | Care Plan 已生成 | 显示 Care Plan 内容和下载按钮 |
+| `failed` | 生成失败 | 显示错误信息和重试按钮 |
+
+---
+
+### 8.4 其他辅助 Endpoints
+
+| Method | Endpoint | 描述 |
+|--------|----------|------|
+| GET | `/api/orders/{order_id}/download` | 下载 Care Plan 为 .txt 文件 |
+| POST | `/api/orders/{order_id}/retry` | 重新生成失败的 Care Plan |
+| GET | `/api/patients/` | 患者列表 |
+| GET | `/api/patients/{mrn}/` | 按 MRN 查询患者 |
+| GET | `/api/providers/` | Provider 列表 |
+| POST | `/api/reports/export/` | 导出报告 (CSV) |
 
 ---
 

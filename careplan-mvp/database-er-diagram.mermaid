@@ -1,0 +1,46 @@
+erDiagram
+    PATIENT ||--o{ ORDER : "has"
+    PROVIDER ||--o{ ORDER : "prescribes"
+    ORDER ||--|| CARE_PLAN : "generates"
+
+    PATIENT {
+        uuid id PK
+        varchar mrn UK "病历号(6位)"
+        varchar first_name "名"
+        varchar last_name "姓"
+        date dob "出生日期"
+        timestamp created_at
+        timestamp updated_at
+    }
+
+    PROVIDER {
+        uuid id PK
+        varchar npi UK "医生执照号(10位)"
+        varchar name "姓名"
+        timestamp created_at
+    }
+
+    ORDER {
+        uuid id PK
+        uuid patient_id FK
+        uuid provider_id FK
+        varchar medication_name "药物名称"
+        varchar primary_diagnosis "主要诊断ICD-10"
+        json additional_diagnoses "附加诊断"
+        json medication_history "用药历史"
+        text patient_records "患者记录"
+        varchar status "pending/processing/completed/failed"
+        text error_message "错误信息"
+        timestamp created_at
+        timestamp updated_at
+        timestamp completed_at
+    }
+
+    CARE_PLAN {
+        uuid id PK
+        uuid order_id FK "一对一"
+        text content "护理计划内容"
+        timestamp generated_at "生成时间"
+        varchar llm_model "LLM模型"
+        varchar llm_prompt_version "Prompt版本"
+    }
