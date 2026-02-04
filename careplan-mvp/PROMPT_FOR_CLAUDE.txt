@@ -1,0 +1,91 @@
+===== 快速上下文Prompt - Django可读订单ID功能实现 =====
+
+## 项目概况
+Django后端项目(careplan-mvp)，核心功能是为患者创建药物护理计划(CarePlan)。主要模型：Patient、Provider、Order、CarePlan。
+
+## 完成的任务
+为Order模型添加10位可读订单ID功能，并创建新的GET API通过该ID查询订单。
+
+## 实现内容
+
+### 1. models.py 变更
+- 导入: `import random, string`
+- 新增函数 `generate_readable_order_id()`: 生成10位大写字母+数字的唯一ID
+- Order模型新增字段: `readable_order_id = models.CharField(max_length=10, unique=True, default=generate_readable_order_id, editable=False)`
+
+### 2. views.py 变更
+- 修改 `OrderCreateView`: 返回JSON中添加 `'readable_order_id': order.readable_order_id`
+- 新增 `OrderByReadableIdView` 类:
+  - 端点: `GET /api/orders/by-code/<readable_order_id>/`
+  - 功能: 通过可读ID查询订单，自动转大写 `order = Order.objects.get(readable_order_id=readable_order_id.upper())`
+  - 返回完整订单详情（患者、医生、药物、CarePlan等）
+
+### 3. urls.py 变更
+- 导入添加: `OrderByReadableIdView`
+- 新增路由（必须在UUID路由之前）: `path('orders/by-code/<str:readable_order_id>/', OrderByReadableIdView.as_view(), ...)`
+
+### 4. 数据库迁移
+- 创建文件: `migrations/0002_order_readable_order_id.py`
+- 操作: AddField(model_name='order', name='readable_order_id', ...)
+
+## 关键技术点
+- ID格式: 10位大写字母+数字 (例: A3K9L2M7P4)
+- 唯一性: 生成函数中while循环检查数据库
+- 大小写不敏感: API中.upper()转换
+- 自动生成: default参数在创建时调用
+- 路由顺序: by-code路由必须在<uuid:order_id>之前
+
+## API对比
+旧: GET /api/orders/123e4567-e89b-12d3-a456-426614174000/
+新: GET /api/orders/by-code/A3K9L2M7P4/
+
+## 待执行步骤
+1. 运行迁移: `python manage.py migrate careplan`
+2. 重启服务器
+3. 测试新API
+
+## 文件清单
+- models.py (修改)
+- views.py (修改)
+- urls.py (修改)
+- migrations/0002_order_readable_order_id.py (新建)
+- READABLE_ORDER_ID_API.md (新建 - 完整文档)
+- QUICK_START_GUIDE.md (新建 - 快速指南)
+- test_readable_order_api.py (新建 - 测试脚本)
+- IMPLEMENTATION_SUMMARY.md (新建 - 详细总结)
+
+## 核心代码片段
+
+### generate_readable_order_id函数
+```python
+def generate_readable_order_id():
+    characters = string.ascii_uppercase + string.digits
+    while True:
+        order_id = ''.join(random.choice(characters) for _ in range(10))
+        if not Order.objects.filter(readable_order_id=order_id).exists():
+            return order_id
+```
+
+### OrderByReadableIdView核心逻辑
+```python
+def get(self, request, readable_order_id):
+    try:
+        order = Order.objects.get(readable_order_id=readable_order_id.upper())
+    except Order.DoesNotExist:
+        return JsonResponse({'status': 'error', 'message': 'Order not found'}, status=404)
+
+    response = {
+        'order_id': str(order.id),
+        'readable_order_id': order.readable_order_id,
+        'status': order.status,
+        'patient': {...},
+        'provider': {...},
+        'medication': {...},
+        # 如果completed，还包含care_plan
+    }
+    return JsonResponse(response)
+```
+
+===== End of Context =====
+
+使用此prompt时，告诉Claude: "我的Django项目刚刚添加了可读订单ID功能，请阅读上面的实现总结来了解所有变更。"
