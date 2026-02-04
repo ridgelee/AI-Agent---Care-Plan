@@ -15,7 +15,9 @@ from .models import Patient, Provider, Order, CarePlan
 
 def build_prompt(order):
     """Build LLM prompt for care plan generation"""
-    return f"""You are an expert clinical pharmacist creating a Care Plan for a specialty pharmacy patient.
+    print(f"[DEBUG][build_prompt] 进入 build_prompt()")
+
+    prompt = f"""You are an expert clinical pharmacist creating a Care Plan for a specialty pharmacy patient.
 
 Patient Information:
 - Name: {order.patient.first_name} {order.patient.last_name}
@@ -57,15 +59,23 @@ Please generate a comprehensive Care Plan with the following sections:
 
 Format the output in clear markdown with headers."""
 
+    print(f"[DEBUG][build_prompt] prompt 构建完成，长度 = {len(prompt)}")
+    return prompt
+
 
 def call_llm(prompt):
     """Call Anthropic API to generate care plan"""
+    print(f"[DEBUG][call_llm] 进入 call_llm()")
+
     api_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('OPENAI_API_KEY')
     if not api_key:
         raise Exception("ANTHROPIC_API_KEY not set")
 
+    print(f"[DEBUG][call_llm] API key 已获取")
+
     client = anthropic.Anthropic(api_key=api_key)
 
+    print(f"[DEBUG][call_llm] 发送请求到 Anthropic API...")
     response = client.messages.create(
         model="claude-sonnet-4-20250514",
         max_tokens=2000,
@@ -74,12 +84,17 @@ def call_llm(prompt):
             {"role": "user", "content": prompt}
         ]
     )
+    print(f"[DEBUG][call_llm] 收到 API 响应")
 
     return response.content[0].text, "claude-sonnet-4-20250514"
 
 
 def generate_care_plan_async(order_id):
     """Background task to generate care plan"""
+    print("\n" + "="*60)
+    print(f"[DEBUG][generate_care_plan_async] 进入后台线程 generate_care_plan_async()")
+    print(f"[DEBUG][generate_care_plan_async] order_id = {order_id}")
+
     import django
     django.setup()
 
@@ -87,14 +102,22 @@ def generate_care_plan_async(order_id):
 
     try:
         order = Order.objects.get(id=order_id)
+        print(f"[DEBUG][generate_care_plan_async] 获取 order 成功，order.id = {order.id}")
 
         # Update to processing
         order.status = 'processing'
         order.save()
+        print(f"[DEBUG][generate_care_plan_async] 状态已更新为 processing")
 
         # Generate care plan
+        print(f"[DEBUG][generate_care_plan_async] 准备调用 build_prompt()")
         prompt = build_prompt(order)
+        print(f"[DEBUG][generate_care_plan_async] prompt 前200字符 = {prompt[:200]}...")
+
+        print(f"[DEBUG][generate_care_plan_async] 准备调用 call_llm() -> Anthropic API")
         content, model = call_llm(prompt)
+        print(f"[DEBUG][generate_care_plan_async] LLM 返回成功")
+        print(f"[DEBUG][generate_care_plan_async] 返回内容前100字符 = {content[:100]}...")
 
         # Create care plan
         CarePlan.objects.create(
@@ -103,13 +126,17 @@ def generate_care_plan_async(order_id):
             llm_model=model,
             llm_prompt_version='1.0'
         )
+        print(f"[DEBUG][generate_care_plan_async] CarePlan 已创建")
 
         # Update order to completed
         order.status = 'completed'
         order.completed_at = timezone.now()
         order.save()
+        print(f"[DEBUG][generate_care_plan_async] 状态已更新为 completed")
+        print("="*60 + "\n")
 
     except Exception as e:
+        print(f"[DEBUG][generate_care_plan_async][ERROR] {str(e)}")
         try:
             order = Order.objects.get(id=order_id)
             order.status = 'failed'
@@ -124,7 +151,11 @@ class OrderCreateView(View):
     """POST /api/orders/ - Create order and start async care plan generation"""
 
     def post(self, request):
+        print("\n" + "="*60)
+        print(f"[DEBUG][OrderCreateView.post] 进入 OrderCreateView.post()")
+
         data = json.loads(request.body)
+        print(f"[DEBUG][OrderCreateView.post] 收到的原始数据 = {data}")
 
         # Get or create patient
         patient_data = data['patient']
@@ -136,6 +167,7 @@ class OrderCreateView(View):
                 'dob': patient_data['dob'],
             }
         )
+        print(f"[DEBUG][OrderCreateView.post] Patient 创建/获取完成，patient.id = {patient.id}, patient.mrn = {patient.mrn}")
 
         # Get or create provider
         provider_data = data['provider']
@@ -143,6 +175,7 @@ class OrderCreateView(View):
             npi=provider_data['npi'],
             defaults={'name': provider_data['name']}
         )
+        print(f"[DEBUG][OrderCreateView.post] Provider 创建/获取完成，provider.id = {provider.id}, provider.npi = {provider.npi}")
 
         # Create order with pending status
         medication = data['medication']
@@ -156,13 +189,17 @@ class OrderCreateView(View):
             patient_records=data.get('patient_records', ''),
             status='pending'
         )
+        print(f"[DEBUG][OrderCreateView.post] Order 创建完成，order.id = {order.id}, order.status = {order.status}")
 
         # Start background thread to generate care plan
+        print(f"[DEBUG][OrderCreateView.post] 启动后台线程...")
         thread = threading.Thread(target=generate_care_plan_async, args=(order.id,))
         thread.daemon = True
         thread.start()
 
         # Return immediately with order_id
+        print(f"[DEBUG][OrderCreateView.post] 返回响应给前端")
+        print("="*60 + "\n")
         return JsonResponse({
             'order_id': str(order.id),
             'status': 'pending',

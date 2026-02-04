@@ -23,6 +23,7 @@ services:
       - DATABASE_URL=postgresql://careplan:careplan123@db:5432/careplan
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DEBUG=1
+      - PYTHONUNBUFFERED=1
     depends_on:
       db:
         condition: service_healthy
