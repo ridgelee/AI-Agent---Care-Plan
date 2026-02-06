@@ -8,9 +8,19 @@ from django.utils import timezone
 from django.db.models import Q
 import json
 import anthropic
-import threading
+import redis
 
 from .models import Patient, Provider, Order, CarePlan
+
+# Redis connection
+_redis_client = None
+
+def get_redis_client():
+    global _redis_client
+    if _redis_client is None:
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+        _redis_client = redis.from_url(redis_url)
+    return _redis_client
 
 
 def build_prompt(order):
@@ -191,11 +201,11 @@ class OrderCreateView(View):
         )
         print(f"[DEBUG][OrderCreateView.post] Order 创建完成，order.id = {order.id}, order.status = {order.status}")
 
-        # Start background thread to generate care plan
-        print(f"[DEBUG][OrderCreateView.post] 启动后台线程...")
-        thread = threading.Thread(target=generate_care_plan_async, args=(order.id,))
-        thread.daemon = True
-        thread.start()
+        # Push order_id to Redis queue for async processing
+        print(f"[DEBUG][OrderCreateView.post] 将 order_id 放入 Redis 队列...")
+        r = get_redis_client()
+        r.lpush('careplan_queue', str(order.id))
+        print(f"[DEBUG][OrderCreateView.post] 已放入 Redis 队列 careplan_queue")
 
         # Return immediately with order_id
         print(f"[DEBUG][OrderCreateView.post] 返回响应给前端")
@@ -203,7 +213,7 @@ class OrderCreateView(View):
         return JsonResponse({
             'order_id': str(order.id),
             'status': 'pending',
-            'message': 'Order created successfully. Care Plan generation started.',
+            'message': 'Order received. Care Plan generation queued.',
             'created_at': order.created_at.isoformat()
         }, status=201)
 

@@ -4,3 +4,4 @@ django-cors-headers==4.3
 psycopg2-binary==2.9.9
 anthropic>=0.77.0
 python-dotenv==1.0
+redis==5.0

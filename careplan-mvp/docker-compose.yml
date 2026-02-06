@@ -15,6 +15,16 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
@@ -23,10 +33,13 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://careplan:careplan123@db:5432/careplan
+      - REDIS_URL=redis://redis:6379/0
       - DEBUG=1
       - PYTHONUNBUFFERED=1
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     volumes:
       - ./backend:/app
