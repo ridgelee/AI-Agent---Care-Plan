@@ -46,6 +46,25 @@ services:
     command: >
       sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
 
+  worker:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://careplan:careplan123@db:5432/careplan
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=1
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "python worker.py"
+
   frontend:
     build: ./frontend
     ports:
