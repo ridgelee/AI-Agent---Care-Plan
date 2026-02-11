@@ -5,3 +5,5 @@ psycopg2-binary==2.9.9
 anthropic>=0.77.0
 python-dotenv==1.0
 redis==5.0
+celery[redis]==5.3.6
+flower==2.0.1

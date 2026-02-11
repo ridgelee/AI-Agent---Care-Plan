@@ -63,7 +63,25 @@ services:
     volumes:
       - ./backend:/app
     command: >
-      sh -c "python worker.py"
+      celery -A config worker --loglevel=info --concurrency=2
+
+  flower:
+    build: ./backend
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://careplan:careplan123@db:5432/careplan
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - worker
+    volumes:
+      - ./backend:/app
+    command: >
+      celery -A config flower --port=5555
 
   frontend:
     build: ./frontend

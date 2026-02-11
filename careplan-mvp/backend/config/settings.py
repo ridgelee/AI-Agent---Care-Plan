@@ -58,3 +58,13 @@ REST_FRAMEWORK = {
 
 # OpenAI
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+
+# Celery
+CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = 'UTC'
+# 任务执行超时：10 分钟
+CELERY_TASK_SOFT_TIME_LIMIT = 600

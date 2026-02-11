@@ -8,19 +8,8 @@ from django.utils import timezone
 from django.db.models import Q
 import json
 import anthropic
-import redis
 
 from .models import Patient, Provider, Order, CarePlan
-
-# Redis connection
-_redis_client = None
-
-def get_redis_client():
-    global _redis_client
-    if _redis_client is None:
-        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
-        _redis_client = redis.from_url(redis_url)
-    return _redis_client
 
 
 def build_prompt(order):
@@ -201,11 +190,11 @@ class OrderCreateView(View):
         )
         print(f"[DEBUG][OrderCreateView.post] Order 创建完成，order.id = {order.id}, order.status = {order.status}")
 
-        # Push order_id to Redis queue for async processing
-        print(f"[DEBUG][OrderCreateView.post] 将 order_id 放入 Redis 队列...")
-        r = get_redis_client()
-        r.lpush('careplan_queue', str(order.id))
-        print(f"[DEBUG][OrderCreateView.post] 已放入 Redis 队列 careplan_queue")
+        # 通过 Celery 异步分发任务
+        from careplan.tasks import generate_care_plan
+        print(f"[DEBUG][OrderCreateView.post] 将 order_id 提交给 Celery...")
+        generate_care_plan.delay(str(order.id))
+        print(f"[DEBUG][OrderCreateView.post] 已提交 Celery 任务")
 
         # Return immediately with order_id
         print(f"[DEBUG][OrderCreateView.post] 返回响应给前端")
