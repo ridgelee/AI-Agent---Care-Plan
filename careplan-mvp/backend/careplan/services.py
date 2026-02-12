@@ -82,63 +82,6 @@ def call_llm(prompt):
     return response.content[0].text, "claude-sonnet-4-20250514"
 
 
-def generate_care_plan_async(order_id):
-    """Background task to generate care plan"""
-    print("\n" + "="*60)
-    print(f"[DEBUG][generate_care_plan_async] 进入后台线程 generate_care_plan_async()")
-    print(f"[DEBUG][generate_care_plan_async] order_id = {order_id}")
-
-    import django
-    django.setup()
-
-    from .models import Order, CarePlan
-
-    try:
-        order = Order.objects.get(id=order_id)
-        print(f"[DEBUG][generate_care_plan_async] 获取 order 成功，order.id = {order.id}")
-
-        # Update to processing
-        order.status = 'processing'
-        order.save()
-        print(f"[DEBUG][generate_care_plan_async] 状态已更新为 processing")
-
-        # Generate care plan
-        print(f"[DEBUG][generate_care_plan_async] 准备调用 build_prompt()")
-        prompt = build_prompt(order)
-        print(f"[DEBUG][generate_care_plan_async] prompt 前200字符 = {prompt[:200]}...")
-
-        print(f"[DEBUG][generate_care_plan_async] 准备调用 call_llm() -> Anthropic API")
-        content, model = call_llm(prompt)
-        print(f"[DEBUG][generate_care_plan_async] LLM 返回成功")
-        print(f"[DEBUG][generate_care_plan_async] 返回内容前100字符 = {content[:100]}...")
-
-        # Create care plan
-        CarePlan.objects.create(
-            order=order,
-            content=content,
-            llm_model=model,
-            llm_prompt_version='1.0'
-        )
-        print(f"[DEBUG][generate_care_plan_async] CarePlan 已创建")
-
-        # Update order to completed
-        order.status = 'completed'
-        order.completed_at = timezone.now()
-        order.save()
-        print(f"[DEBUG][generate_care_plan_async] 状态已更新为 completed")
-        print("="*60 + "\n")
-
-    except Exception as e:
-        print(f"[DEBUG][generate_care_plan_async][ERROR] {str(e)}")
-        try:
-            order = Order.objects.get(id=order_id)
-            order.status = 'failed'
-            order.error_message = str(e)
-            order.save()
-        except:
-            pass
-
-
 def create_order(data):
     """Create patient, provider, order and submit Celery task. Returns order."""
     print("\n" + "="*60)
