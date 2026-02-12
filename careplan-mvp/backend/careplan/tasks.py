@@ -22,7 +22,7 @@ def generate_care_plan(self, order_id: str):
       - 超出次数后将 order 标记为 failed
     """
     from careplan.models import Order, CarePlan
-    from careplan.views import build_prompt, call_llm
+    from careplan.services import build_prompt, call_llm
 
     logger.info("[Celery][generate_care_plan] 开始处理 order_id=%s (attempt %d/%d)",
                 order_id, self.request.retries + 1, self.max_retries + 1)
