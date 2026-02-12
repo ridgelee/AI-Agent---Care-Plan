@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 
 const styles = {
   container: {
@@ -225,6 +225,35 @@ function App() {
   const [checkingStatus, setCheckingStatus] = useState(false)
   const [result, setResult] = useState(null)
 
+  // Polling state
+  const [polling, setPolling] = useState(false)
+  const pollingRef = useRef(null)
+
+  // Auto-poll when result status is pending or processing
+  useEffect(() => {
+    if (polling && result?.order_id && (result.status === 'pending' || result.status === 'processing')) {
+      pollingRef.current = setInterval(async () => {
+        try {
+          const response = await fetch(`/api/orders/${result.order_id}/`)
+          const data = await response.json()
+          setResult(data)
+          if (data.status === 'completed' || data.status === 'failed') {
+            setPolling(false)
+          }
+        } catch (error) {
+          // Keep polling on network errors - don't stop
+        }
+      }, 3000)
+    }
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+    }
+  }, [polling, result?.order_id, result?.status])
+
   // Search state
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState(null)
@@ -306,6 +335,9 @@ function App() {
       })
       const data = await response.json()
       setResult(data)
+      if (data.order_id && data.status !== 'failed') {
+        setPolling(true)
+      }
     } catch (error) {
       setResult({
         status: 'failed',
@@ -626,15 +658,27 @@ function App() {
             {result.message && <p style={{ margin: '5px 0 0 0' }}>{result.message}</p>}
           </div>
 
-          {/* Check Status Button - Show when pending or processing */}
+          {/* Polling indicator or manual Check Status - Show when pending or processing */}
           {(result.status === 'pending' || result.status === 'processing') && (
-            <button
-              style={checkingStatus ? { ...styles.checkStatusButton, ...styles.buttonDisabled } : styles.checkStatusButton}
-              onClick={handleCheckStatus}
-              disabled={checkingStatus}
-            >
-              {checkingStatus ? 'Checking...' : 'Check Status'}
-            </button>
+            polling ? (
+              <div style={{ textAlign: 'center', padding: '10px', color: '#004085' }}>
+                Auto-checking every 3 seconds...
+                <button
+                  style={{ ...styles.checkStatusButton, marginTop: '10px', background: '#6c757d' }}
+                  onClick={() => setPolling(false)}
+                >
+                  Stop Auto-Check
+                </button>
+              </div>
+            ) : (
+              <button
+                style={checkingStatus ? { ...styles.checkStatusButton, ...styles.buttonDisabled } : styles.checkStatusButton}
+                onClick={() => { handleCheckStatus(); setPolling(true); }}
+                disabled={checkingStatus}
+              >
+                {checkingStatus ? 'Checking...' : 'Check Status'}
+              </button>
+            )
           )}
 
           {/* Care Plan Content - Show when completed */}
