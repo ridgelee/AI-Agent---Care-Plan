@@ -54,6 +54,7 @@ REST_FRAMEWORK = {
     'DEFAULT_PARSER_CLASSES': [
         'rest_framework.parsers.JSONParser',
     ],
+    'EXCEPTION_HANDLER': 'careplan.exception_handler.unified_exception_handler',
 }
 
 # OpenAI

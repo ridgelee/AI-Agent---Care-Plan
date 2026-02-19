@@ -83,6 +83,22 @@ services:
     command: >
       celery -A config flower --port=5555
 
+  test:
+    build: ./backend
+    environment:
+      - DATABASE_URL=postgresql://careplan:careplan123@db:5432/careplan
+      - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+    command: >
+      sh -c "python manage.py migrate --run-syncdb && pytest"
+    profiles:
+      - test
+
   frontend:
     build: ./frontend
     ports:
