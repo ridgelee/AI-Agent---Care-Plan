@@ -1,12 +1,14 @@
+import json
+
 from django.http import JsonResponse, HttpResponse
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 
 from .services import create_order, get_order_detail, get_care_plan_download, search_orders
-from .exceptions import BaseAppException
+from .exceptions import BaseAppException, ValidationError
+from .intake import get_adapter
 from .serializers import (
-    parse_order_request,
     serialize_order_created,
     serialize_order_detail,
     serialize_search_results,
@@ -16,10 +18,7 @@ from .serializers import (
 class ExceptionHandlerMixin:
     """
     给原生 Django View 加上统一异常捕获。
-
-    DRF 的 EXCEPTION_HANDLER 只对 DRF 的 APIView 生效。
-    当前项目用的是 django.views.View，所以需要这个 mixin
-    在 dispatch 层统一 catch BaseAppException。
+    在 dispatch 层统一 catch BaseAppException，返回结构化 JSON 错误响应。
     """
 
     def dispatch(self, request, *args, **kwargs):
@@ -41,8 +40,10 @@ class OrderCreateView(ExceptionHandlerMixin, View):
     """POST /api/orders/ - Create order and start async care plan generation"""
 
     def post(self, request):
-        data = parse_order_request(request)
-        order = create_order(data)    # BlockError / WarningError → mixin 兜底
+        source = request.headers.get('X-Order-Source', 'clinic_b')
+        adapter = get_adapter(source, request.body, request.content_type)
+        internal_order = adapter.process()          # parse → transform → validate
+        order = create_order(internal_order)        # 直接传 InternalOrder
         return JsonResponse(serialize_order_created(order), status=201)
 
 
@@ -73,7 +74,13 @@ class OrderSearchView(ExceptionHandlerMixin, View):
     """POST /api/orders/search/ - Search orders"""
 
     def post(self, request):
-        data = parse_order_request(request)
-        query = data.get('query', '').strip()
+        try:
+            body = json.loads(request.body)
+        except (json.JSONDecodeError, ValueError):
+            raise ValidationError(
+                message='Request body must be valid JSON.',
+                code='INVALID_JSON',
+            )
+        query = (body.get('query') or '').strip()
         orders = search_orders(query)
         return JsonResponse(serialize_search_results(orders))
