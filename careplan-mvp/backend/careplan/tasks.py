@@ -22,7 +22,8 @@ def generate_care_plan(self, order_id: str):
       - 超出次数后将 order 标记为 failed
     """
     from careplan.models import Order, CarePlan
-    from careplan.services import build_prompt, call_llm
+    from careplan.services import build_prompt, SYSTEM_PROMPT
+    from careplan.llm import get_llm_service
 
     logger.info("[Celery][generate_care_plan] 开始处理 order_id=%s (attempt %d/%d)",
                 order_id, self.request.retries + 1, self.max_retries + 1)
@@ -43,7 +44,9 @@ def generate_care_plan(self, order_id: str):
         logger.info("[Celery] Prompt 构建完成，长度=%d", len(prompt))
 
         # 2. 调用 LLM
-        content, model = call_llm(prompt)
+        llm = get_llm_service()
+        response = llm.complete(SYSTEM_PROMPT, prompt)
+        content, model = response.content, response.model
         logger.info("[Celery] LLM 返回成功，内容前100字符: %s", content[:100])
 
         # 3. 写入 CarePlan（已存在则先删除，避免 OneToOne 冲突）

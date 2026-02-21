@@ -60,6 +60,9 @@ REST_FRAMEWORK = {
 # OpenAI
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 
+# LLM Provider  ("anthropic" | "openai")
+LLM_PROVIDER = os.getenv('LLM_PROVIDER', 'anthropic')
+
 # Celery
 CELERY_BROKER_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.getenv('REDIS_URL', 'redis://localhost:6379/0')

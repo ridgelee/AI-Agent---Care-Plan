@@ -1,11 +1,11 @@
-import os
 from datetime import date
 from django.db.models import Q
-import anthropic
 
 from .models import Patient, Provider, Order, CarePlan
 from .exceptions import BlockError, WarningError, ValidationError
 from .intake.types import InternalOrder, ProviderData, PatientData
+
+SYSTEM_PROMPT = "You are an expert clinical pharmacist specializing in specialty pharmacy care plans."
 
 
 def check_provider_duplicate(provider: ProviderData):
@@ -169,22 +169,6 @@ Format the output in clear markdown with headers."""
 
     return prompt
 
-
-def call_llm(prompt):
-    """Call Anthropic API to generate care plan"""
-    api_key = os.getenv('ANTHROPIC_API_KEY') or os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        raise Exception("ANTHROPIC_API_KEY not set")
-
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        system="You are an expert clinical pharmacist specializing in specialty pharmacy care plans.",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.content[0].text, "claude-sonnet-4-20250514"
 
 
 def create_order(internal_order: InternalOrder):
