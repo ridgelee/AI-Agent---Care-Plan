@@ -1,11 +1,41 @@
+import time
 from datetime import date
 from django.db.models import Q
+from prometheus_client import Histogram, Counter
 
 from .models import Patient, Provider, Order, CarePlan
 from .exceptions import BlockError, WarningError, ValidationError
 from .intake.types import InternalOrder, ProviderData, PatientData
 
 SYSTEM_PROMPT = "You are an expert clinical pharmacist specializing in specialty pharmacy care plans."
+
+# ── DB 查询耗时指标 ────────────────────────────────────────────────────────
+#
+# 打点位置：重复检测三个函数，这是每次下单都会触发的查询
+# 500ms = warning 阈值，2000ms = critical 阈值
+#
+DB_QUERY_DURATION = Histogram(
+    'db_query_duration_seconds',
+    'Database query duration in seconds',
+    ['operation'],          # operation: check_provider / check_patient_mrn /
+                            #            check_patient_name_dob / check_order_history / check_order_same_day
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0],
+)
+
+DB_SLOW_QUERIES = Counter(
+    'db_slow_queries_total',
+    'Number of queries exceeding threshold',
+    ['operation', 'level'],  # level: warning(>500ms) / critical(>2000ms)
+)
+
+
+def _record_query(operation: str, duration: float):
+    """统一打点：记录耗时，并在超阈值时递增慢查询计数器。"""
+    DB_QUERY_DURATION.labels(operation=operation).observe(duration)
+    if duration > 2.0:
+        DB_SLOW_QUERIES.labels(operation=operation, level='critical').inc()
+    elif duration > 0.5:
+        DB_SLOW_QUERIES.labels(operation=operation, level='warning').inc()
 
 
 def check_provider_duplicate(provider: ProviderData):
@@ -15,10 +45,13 @@ def check_provider_duplicate(provider: ProviderData):
     - NPI 相同 + 名字不同 → 阻止 (409)
     - 不存在 → 返回 None
     """
+    t0 = time.time()
     try:
         existing = Provider.objects.get(npi=provider.npi)
     except Provider.DoesNotExist:
+        _record_query('check_provider', time.time() - t0)
         return None
+    _record_query('check_provider', time.time() - t0)
 
     if existing.name == provider.name:
         return existing
@@ -40,8 +73,11 @@ def check_patient_duplicate(patient: PatientData):
     dob = date.fromisoformat(patient.dob) if isinstance(patient.dob, str) else patient.dob
     warnings = []
 
+    # 查询 1：按 MRN 查（有 unique 索引，应极快）
+    t0 = time.time()
     try:
         existing = Patient.objects.get(mrn=patient.mrn)
+        _record_query('check_patient_mrn', time.time() - t0)
         name_match = (existing.first_name == patient.first_name and existing.last_name == patient.last_name)
         dob_match  = (existing.dob == dob)
 
@@ -60,13 +96,16 @@ def check_patient_duplicate(patient: PatientData):
         return existing, warnings
 
     except Patient.DoesNotExist:
-        pass
+        _record_query('check_patient_mrn', time.time() - t0)
 
+    # 查询 2：按姓名+DOB 查重（现在有复合索引 patient_name_dob_idx）
+    t0 = time.time()
     name_dob_matches = Patient.objects.filter(
         first_name=patient.first_name,
         last_name=patient.last_name,
         dob=dob,
     )
+    _record_query('check_patient_name_dob', time.time() - t0)
     if name_dob_matches.exists():
         matched = name_dob_matches.first()
         warnings.append({
@@ -89,15 +128,20 @@ def check_order_duplicate(patient, medication_name, confirm=False):
     warnings = []
     today = date.today()
 
+    # 查询 1：患者历史订单（复合索引 order_patient_medication_idx）
+    t0 = time.time()
     existing_orders = Order.objects.filter(
         patient=patient,
         medication_name=medication_name,
     )
-
     if not existing_orders.exists():
+        _record_query('check_order_history', time.time() - t0)
         return warnings
 
+    # 查询 2：今天是否已有订单（created_at 索引）
     same_day = existing_orders.filter(created_at__date=today)
+    _record_query('check_order_history', time.time() - t0)
+
     if same_day.exists():
         order = same_day.first()
         raise BlockError(

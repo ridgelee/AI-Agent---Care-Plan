@@ -4,10 +4,11 @@
 新增数据源：在此文件添加一个类，然后在 factory.py 注册即可。
 
 已注册数据源：
-  clinic_b    — ClinicBAdapter      (JSON, pt/dx/rx 命名风格)
+  clinic_b    — ClinicBAdapter      (JSON, patient/medication 新格式 + pt/dx/rx 旧格式兼容)
   hospital_a  — HospitalAAdapter    (XML, PascalCase 命名风格)
   riverside   — RiversideAdapter    (JSON, subject/ordering_physician 命名风格)
   summit      — SummitAdapter       (JSON, 完全平铺 + SCREAMING_SNAKE_CASE)
+  generic     — GenericAdapter      (JSON, 直接映射 InternalOrder 字段名)
 """
 
 import json
@@ -20,7 +21,23 @@ from .types import InternalOrder, MedicationData, PatientData, ProviderData
 
 # ── ClinicBAdapter ─────────────────────────────────────────────────────────
 #
-# 外部格式示例（JSON）:
+# 支持两种格式（新格式优先，旧格式兼容）:
+#
+# 新格式（标准字段名）:
+# {
+#   "patient":  { "mrn": "123456", "first_name": "John", "last_name": "Doe", "dob": "1980-01-15" },
+#   "provider": { "npi": "1234567890", "name": "Dr. Smith" },
+#   "medication": {
+#     "name": "Humira",
+#     "primary_diagnosis": "M06.9",
+#     "additional_diagnoses": ["E11.9"],
+#     "medication_history": ["Methotrexate 15mg"]
+#   },
+#   "patient_records": "Patient presents with...",
+#   "confirm": false
+# }
+#
+# 旧格式（兼容保留）:
 # {
 #   "pt":       { "mrn": "123456", "fname": "John", "lname": "Doe", "dob": "1980-01-15" },
 #   "provider": { "npi_num": "1234567890", "name": "Dr. Smith" },
@@ -41,36 +58,48 @@ class ClinicBAdapter(BaseIntakeAdapter):
 
     def transform(self) -> InternalOrder:
         raw = self._parsed
-        pt       = raw.get("pt") or {}
+
+        # 新格式：patient / medication；旧格式：pt / dx / rx（兼容）
+        pt       = raw.get("patient") or raw.get("pt") or {}
         provider = raw.get("provider") or {}
+        med      = raw.get("medication") or {}
         dx       = raw.get("dx") or {}
         rx       = raw.get("rx") or {}
 
-        secondary = dx.get("secondary") or []
-        if isinstance(secondary, str):
-            secondary = [secondary] if secondary else []
+        # additional_diagnoses：新格式在 medication 内，旧格式在 dx.secondary
+        additional = med.get("additional_diagnoses") or dx.get("secondary") or []
+        if isinstance(additional, str):
+            additional = [additional] if additional.strip() else []
+
+        # medication_history：新格式在 medication 内，旧格式在顶层 med_hx
+        med_history = (
+            med.get("medication_history")
+            or raw.get("med_hx")
+            or raw.get("medication_history")
+            or []
+        )
 
         return InternalOrder(
             source=self.source,
-            raw_payload=raw,                          # 保留原始数据
+            raw_payload=raw,
             confirm=bool(raw.get("confirm", False)),
             patient=PatientData(
                 mrn=str(pt.get("mrn") or "").strip(),
-                first_name=(pt.get("fname") or pt.get("first_name") or "").strip() or "Unknown",
-                last_name=(pt.get("lname") or pt.get("last_name") or "").strip() or "Unknown",
+                first_name=(pt.get("first_name") or pt.get("fname") or "").strip() or "Unknown",
+                last_name=(pt.get("last_name") or pt.get("lname") or "").strip() or "Unknown",
                 dob=(pt.get("dob") or "").strip(),
             ),
             provider=ProviderData(
-                npi=str(provider.get("npi_num") or provider.get("npi") or "").strip(),
+                npi=str(provider.get("npi") or provider.get("npi_num") or "").strip(),
                 name=(provider.get("name") or "").strip() or "Unknown",
             ),
             medication=MedicationData(
-                name=(rx.get("med_name") or rx.get("name") or "").strip(),
-                primary_diagnosis=(dx.get("primary") or "").strip(),
-                additional_diagnoses=[c.strip() for c in secondary if (c or "").strip()],
-                medication_history=list(raw.get("med_hx") or raw.get("medication_history") or []),
+                name=(med.get("name") or rx.get("med_name") or rx.get("name") or "").strip(),
+                primary_diagnosis=(med.get("primary_diagnosis") or dx.get("primary") or "").strip(),
+                additional_diagnoses=[c.strip() for c in additional if (c or "").strip()],
+                medication_history=list(med_history),
             ),
-            patient_records=(raw.get("clinical_notes") or raw.get("patient_records") or "").strip(),
+            patient_records=(raw.get("patient_records") or raw.get("clinical_notes") or "").strip(),
         )
 
 
@@ -341,4 +370,73 @@ class SummitAdapter(BaseIntakeAdapter):
                 medication_history=prior_meds,
             ),
             patient_records=(raw.get("CLINICAL_SUMMARY") or "").strip(),
+        )
+
+
+# ── GenericAdapter ─────────────────────────────────────────────────────────
+#
+# 通用 JSON 格式，字段名直接对应 InternalOrder。
+# 适合开发测试、内部系统调用。
+# 使用方式：Header  X-Order-Source: generic
+#
+# 格式示例：
+# {
+#   "patient": {
+#     "first_name": "Ryan",
+#     "last_name": "Lee",
+#     "dob": "1985-03-15",
+#     "mrn": "124234"
+#   },
+#   "provider": {
+#     "name": "Dr. Smith",
+#     "npi": "1234567890"
+#   },
+#   "medication": {
+#     "name": "Humira",
+#     "primary_diagnosis": "M06.9",
+#     "additional_diagnoses": ["E11.9"],
+#     "medication_history": ["Methotrexate 15mg"]
+#   },
+#   "patient_records": "Patient on MTX for 6 months."
+# }
+
+class GenericAdapter(BaseIntakeAdapter):
+    source = "generic"
+
+    def parse(self) -> Any:
+        raw = json.loads(self._raw_body) if isinstance(self._raw_body, (bytes, str)) else self._raw_body
+        self._parsed = raw
+        return raw
+
+    def transform(self) -> InternalOrder:
+        raw      = self._parsed
+        patient  = raw.get("patient") or {}
+        provider = raw.get("provider") or {}
+        med      = raw.get("medication") or {}
+
+        additional = med.get("additional_diagnoses") or []
+        if isinstance(additional, str):
+            additional = [additional] if additional.strip() else []
+
+        return InternalOrder(
+            source=self.source,
+            raw_payload=raw,
+            confirm=bool(raw.get("confirm", False)),
+            patient=PatientData(
+                mrn=str(patient.get("mrn") or "").strip(),
+                first_name=(patient.get("first_name") or "").strip() or "Unknown",
+                last_name=(patient.get("last_name") or "").strip() or "Unknown",
+                dob=(patient.get("dob") or "").strip(),
+            ),
+            provider=ProviderData(
+                npi=str(provider.get("npi") or "").strip(),
+                name=(provider.get("name") or "").strip() or "Unknown",
+            ),
+            medication=MedicationData(
+                name=(med.get("name") or "").strip(),
+                primary_diagnosis=(med.get("primary_diagnosis") or "").strip(),
+                additional_diagnoses=[c.strip() for c in additional if (c or "").strip()],
+                medication_history=list(med.get("medication_history") or []),
+            ),
+            patient_records=(raw.get("patient_records") or "").strip(),
         )

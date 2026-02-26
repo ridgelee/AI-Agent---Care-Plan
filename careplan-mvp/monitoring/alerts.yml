@@ -1,0 +1,107 @@
+groups:
+  - name: db_slow_queries
+    rules:
+      # 应用层：单次 DB 查询 P95 > 500ms → Warning
+      - alert: DBQuerySlowWarning
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation)
+          ) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB 查询 P95 超过 500ms"
+          description: "操作 {{ $labels.operation }} P95={{ $value | humanizeDuration }}，可能缺索引导致全表扫描"
+
+      # 应用层：单次 DB 查询 P95 > 2s → Critical
+      - alert: DBQuerySlowCritical
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(db_query_duration_seconds_bucket[5m])) by (le, operation)
+          ) > 2.0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DB 查询 P95 超过 2s（严重）"
+          description: "操作 {{ $labels.operation }} P95={{ $value | humanizeDuration }}，重复检测严重影响下单速度"
+
+      # pg_stat_statements：均值超慢查询
+      - alert: PostgresSlowQueryWarning
+        expr: pg_slow_query_mean_exec_time_ms > 500
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PostgreSQL 慢查询（均值 > 500ms）"
+          description: "SQL: {{ $labels.query_snippet }} 均值={{ $value }}ms"
+
+      - alert: PostgresSlowQueryCritical
+        expr: pg_slow_query_mean_exec_time_ms > 2000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "PostgreSQL 慢查询（均值 > 2s，严重）"
+          description: "SQL: {{ $labels.query_snippet }} 均值={{ $value }}ms，请立即检查索引"
+
+      # 全表扫描告警：orders 或 patients 表 seq_scan 突增
+      - alert: PostgresSeqScanSpike
+        expr: rate(pg_table_seq_scans_seq_scan[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "表 {{ $labels.table_name }} 出现频繁全表扫描"
+          description: "每秒 {{ $value | humanize }} 次全表扫描，可能缺少索引"
+
+  - name: llm_latency
+    rules:
+      # P95 > 60s 持续 2 分钟 → Warning
+      - alert: LLMLatencyWarning
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(llm_api_duration_seconds_bucket[5m])) by (le, provider)
+          ) > 60
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM API P95 延迟超过 60s"
+          description: "{{ $labels.provider }} P95={{ $value | humanizeDuration }}，可能是网络慢或 API 限速"
+
+      # P95 > 120s 持续 2 分钟 → Critical
+      - alert: LLMLatencyCritical
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(llm_api_duration_seconds_bucket[5m])) by (le, provider)
+          ) > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM API P95 延迟超过 120s（严重）"
+          description: "{{ $labels.provider }} P95={{ $value | humanizeDuration }}，Care Plan 生成严重受阻"
+
+      # 错误率突增 → 可能是 API 限速
+      - alert: LLMRateLimitSpike
+        expr: |
+          sum(rate(llm_api_errors_total{error_type="rate_limit"}[5m])) by (provider) > 0.1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM API 限速错误突增"
+          description: "{{ $labels.provider }} 每秒限速错误 {{ $value | humanize }} 次，可能超出 API 配额"
+
+      # 网络错误 → 可能是网络问题
+      - alert: LLMNetworkErrors
+        expr: |
+          sum(rate(llm_api_errors_total{error_type="network"}[5m])) by (provider) > 0.05
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM API 网络错误"
+          description: "{{ $labels.provider }} 出现网络连接错误，请检查出口网络"

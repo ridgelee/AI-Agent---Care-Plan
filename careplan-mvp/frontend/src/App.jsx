@@ -198,6 +198,45 @@ const styles = {
     borderTop: '2px solid #dee2e6',
     margin: '30px 0',
   },
+  inputError: {
+    width: '100%',
+    padding: '10px 12px',
+    border: '1px solid #dc3545',
+    borderRadius: '4px',
+    fontSize: '14px',
+    boxSizing: 'border-box',
+  },
+  errorText: {
+    color: '#dc3545',
+    fontSize: '12px',
+    marginTop: '4px',
+  },
+}
+
+// ── 前端校验规则（与后端 base.py 保持一致）──────────────────────────────
+const ICD10_RE = /^[A-Za-z]\d{2}(\.\d{1,4})?$/
+
+function validateForm(formData) {
+  const errors = {}
+
+  if (!/^\d{6}$/.test(formData.patient.mrn)) {
+    errors['patient.mrn'] = 'MRN must be exactly 6 digits'
+  }
+  if (!/^\d{10}$/.test(formData.provider.npi)) {
+    errors['provider.npi'] = 'NPI must be exactly 10 digits'
+  }
+  if (formData.medication.primary_diagnosis && !ICD10_RE.test(formData.medication.primary_diagnosis)) {
+    errors['medication.primary_diagnosis'] = 'Invalid ICD-10 format (e.g. M06.9, G70.00)'
+  }
+  if (formData.medication.additional_diagnoses) {
+    formData.medication.additional_diagnoses.split(',').map(s => s.trim()).filter(Boolean).forEach((code, i) => {
+      if (!ICD10_RE.test(code)) {
+        errors[`medication.additional_diagnoses[${i}]`] = `Invalid ICD-10 code: "${code}"`
+      }
+    })
+  }
+
+  return errors
 }
 
 function App() {
@@ -220,6 +259,9 @@ function App() {
     },
     patient_records: '',
   })
+
+  const [fieldErrors, setFieldErrors] = useState({})
+  const [pendingConfirm, setPendingConfirm] = useState(null) // { payload, warnings }
 
   const [loading, setLoading] = useState(false)
   const [checkingStatus, setCheckingStatus] = useState(false)
@@ -308,8 +350,16 @@ function App() {
   // POST /api/orders/ - Submit form and get order_id
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setLoading(true)
     setResult(null)
+
+    // ── 前端校验 ─────────────────────────────────────────────────────────
+    const errors = validateForm(formData)
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors)
+      return
+    }
+    setFieldErrors({})
+    setLoading(true)
 
     const payload = {
       patient: formData.patient,
@@ -318,14 +368,63 @@ function App() {
         name: formData.medication.name,
         primary_diagnosis: formData.medication.primary_diagnosis,
         additional_diagnoses: formData.medication.additional_diagnoses
-          ? formData.medication.additional_diagnoses.split(',').map(s => s.trim())
+          ? formData.medication.additional_diagnoses.split(',').map(s => s.trim()).filter(Boolean)
           : [],
         medication_history: formData.medication.medication_history
-          ? formData.medication.medication_history.split(',').map(s => s.trim())
+          ? formData.medication.medication_history.split(',').map(s => s.trim()).filter(Boolean)
           : [],
       },
       patient_records: formData.patient_records,
     }
+
+    try {
+      const response = await fetch('/api/orders/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await response.json()
+
+      if (!response.ok) {
+        // ── WarningError：需要用户确认后重新提交 ─────────────────────────
+        if (data.type === 'warning' && data.detail?.warnings) {
+          setPendingConfirm({ payload, warnings: data.detail.warnings })
+          setResult(null)
+          return
+        }
+        // ── 其他 4xx：显示具体 field 错误 ────────────────────────────────
+        if (data.detail?.errors) {
+          const backendErrors = {}
+          data.detail.errors.forEach(err => {
+            backendErrors[err.field] = err.message
+          })
+          setFieldErrors(backendErrors)
+        }
+        setResult({ status: 'failed', error: { message: data.message || 'Request failed' } })
+        return
+      }
+
+      setResult(data)
+      if (data.order_id && data.status !== 'failed') {
+        setPolling(true)
+      }
+    } catch (error) {
+      setResult({
+        status: 'failed',
+        error: { message: error.message }
+      })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // POST /api/orders/ with confirm=true - Resubmit after warning
+  const handleConfirm = async () => {
+    if (!pendingConfirm) return
+    setLoading(true)
+    setPendingConfirm(null)
+
+    const payload = { ...pendingConfirm.payload, confirm: true }
 
     try {
       const response = await fetch('/api/orders/', {
@@ -339,10 +438,7 @@ function App() {
         setPolling(true)
       }
     } catch (error) {
-      setResult({
-        status: 'failed',
-        error: { message: error.message }
-      })
+      setResult({ status: 'failed', error: { message: error.message } })
     } finally {
       setLoading(false)
     }
@@ -521,13 +617,20 @@ function App() {
             <div style={styles.field}>
               <label style={styles.label}>MRN (6 digits) *</label>
               <input
-                style={styles.input}
+                style={fieldErrors['patient.mrn'] ? styles.inputError : styles.input}
                 type="text"
                 maxLength={6}
+                placeholder="e.g., 123456"
                 value={formData.patient.mrn}
-                onChange={(e) => handleChange('patient', 'mrn', e.target.value)}
+                onChange={(e) => {
+                  handleChange('patient', 'mrn', e.target.value.replace(/\D/g, ''))
+                  setFieldErrors(prev => ({ ...prev, 'patient.mrn': undefined }))
+                }}
                 required
               />
+              {fieldErrors['patient.mrn'] && (
+                <div style={styles.errorText}>⚠ {fieldErrors['patient.mrn']}</div>
+              )}
             </div>
           </div>
         </div>
@@ -549,13 +652,20 @@ function App() {
             <div style={styles.field}>
               <label style={styles.label}>NPI (10 digits) *</label>
               <input
-                style={styles.input}
+                style={fieldErrors['provider.npi'] ? styles.inputError : styles.input}
                 type="text"
                 maxLength={10}
+                placeholder="e.g., 1234567890"
                 value={formData.provider.npi}
-                onChange={(e) => handleChange('provider', 'npi', e.target.value)}
+                onChange={(e) => {
+                  handleChange('provider', 'npi', e.target.value.replace(/\D/g, ''))
+                  setFieldErrors(prev => ({ ...prev, 'provider.npi': undefined }))
+                }}
                 required
               />
+              {fieldErrors['provider.npi'] && (
+                <div style={styles.errorText}>⚠ {fieldErrors['provider.npi']}</div>
+              )}
             </div>
           </div>
         </div>
@@ -577,13 +687,19 @@ function App() {
             <div style={styles.field}>
               <label style={styles.label}>Primary Diagnosis (ICD-10) *</label>
               <input
-                style={styles.input}
+                style={fieldErrors['medication.primary_diagnosis'] ? styles.inputError : styles.input}
                 type="text"
-                placeholder="e.g., G70.00"
+                placeholder="e.g., M06.9"
                 value={formData.medication.primary_diagnosis}
-                onChange={(e) => handleChange('medication', 'primary_diagnosis', e.target.value)}
+                onChange={(e) => {
+                  handleChange('medication', 'primary_diagnosis', e.target.value)
+                  setFieldErrors(prev => ({ ...prev, 'medication.primary_diagnosis': undefined }))
+                }}
                 required
               />
+              {fieldErrors['medication.primary_diagnosis'] && (
+                <div style={styles.errorText}>⚠ {fieldErrors['medication.primary_diagnosis']}</div>
+              )}
             </div>
           </div>
           <div style={styles.row}>
@@ -631,6 +747,68 @@ function App() {
           {loading ? 'Submitting...' : 'Generate Care Plan'}
         </button>
       </form>
+
+      {/* ── Warning / Confirm Section ─────────────────────────────────── */}
+      {pendingConfirm && (
+        <div style={{
+          background: '#fff8e1',
+          border: '1px solid #f9a825',
+          borderRadius: '8px',
+          padding: '24px',
+          marginBottom: '20px',
+        }}>
+          <h3 style={{ color: '#e65100', marginBottom: '12px' }}>
+            ⚠ 检测到重复，请确认
+          </h3>
+          {pendingConfirm.warnings.map((w, i) => (
+            <div key={i} style={{
+              background: '#fff3e0',
+              border: '1px solid #ffb74d',
+              borderRadius: '4px',
+              padding: '10px 14px',
+              marginBottom: '8px',
+              fontSize: '14px',
+              color: '#e65100',
+            }}>
+              {w.message}
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: '10px', marginTop: '16px' }}>
+            <button
+              style={{
+                flex: 1,
+                background: '#e65100',
+                color: 'white',
+                border: 'none',
+                padding: '12px',
+                borderRadius: '4px',
+                fontSize: '15px',
+                cursor: loading ? 'not-allowed' : 'pointer',
+                opacity: loading ? 0.7 : 1,
+              }}
+              onClick={handleConfirm}
+              disabled={loading}
+            >
+              {loading ? '提交中...' : '确认，继续提交'}
+            </button>
+            <button
+              style={{
+                flex: 1,
+                background: '#6c757d',
+                color: 'white',
+                border: 'none',
+                padding: '12px',
+                borderRadius: '4px',
+                fontSize: '15px',
+                cursor: 'pointer',
+              }}
+              onClick={() => setPendingConfirm(null)}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Result Section */}
       {result && (

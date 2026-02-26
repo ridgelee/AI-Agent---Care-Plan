@@ -9,6 +9,13 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # 开启 pg_stat_statements：记录所有 SQL 的执行时间和调用次数
+    command: >
+      postgres
+        -c shared_preload_libraries=pg_stat_statements
+        -c pg_stat_statements.track=all
+        -c pg_stat_statements.max=1000
+        -c log_min_duration_statement=500
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U careplan -d careplan"]
       interval: 2s
@@ -36,6 +43,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DEBUG=1
       - PYTHONUNBUFFERED=1
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc  # Django 读取 worker 写的 metrics
     depends_on:
       db:
         condition: service_healthy
@@ -43,8 +51,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - prometheus_multiproc:/tmp/prometheus_multiproc      # 与 worker 共享
     command: >
-      sh -c "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
+      sh -c "mkdir -p /tmp/prometheus_multiproc && python manage.py migrate && python manage.py runserver 0.0.0.0:8000"
 
   worker:
     build: ./backend
@@ -55,6 +64,7 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - DEBUG=1
       - PYTHONUNBUFFERED=1
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus_multiproc  # worker 写 metrics 到这里
     depends_on:
       db:
         condition: service_healthy
@@ -62,8 +72,9 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - prometheus_multiproc:/tmp/prometheus_multiproc      # 与 backend 共享
     command: >
-      celery -A config worker --loglevel=info --concurrency=2
+      sh -c "mkdir -p /tmp/prometheus_multiproc && celery -A config worker --loglevel=info --concurrency=2"
 
   flower:
     build: ./backend
@@ -109,5 +120,59 @@ services:
       - ./frontend:/app
       - /app/node_modules
 
+  # ── Monitoring ──────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - backend
+      - flower
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+
+  postgres_exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      - DATA_SOURCE_NAME=postgresql://careplan:careplan123@db:5432/careplan?sslmode=disable
+      - PG_EXPORTER_EXTEND_QUERY_PATH=/etc/postgres_exporter/queries.yml
+    volumes:
+      - ./monitoring/postgres_queries.yml:/etc/postgres_exporter/queries.yml:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  redis_exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      - redis
+
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
+  prometheus_multiproc:   # backend 和 worker 共享的 metrics 目录

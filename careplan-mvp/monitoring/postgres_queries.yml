@@ -1,0 +1,61 @@
+pg_slow_queries:
+  query: |
+    SELECT
+      LEFT(query, 100)              AS query_snippet,
+      calls,
+      ROUND(mean_exec_time::numeric, 2)  AS mean_exec_time_ms,
+      ROUND(max_exec_time::numeric, 2)   AS max_exec_time_ms,
+      ROUND(total_exec_time::numeric, 2) AS total_exec_time_ms,
+      rows
+    FROM pg_stat_statements
+    WHERE mean_exec_time > 100          -- 只暴露均值 > 100ms 的查询
+      AND query NOT LIKE '%pg_stat%'    -- 排除监控自身
+    ORDER BY mean_exec_time DESC
+    LIMIT 20
+  metrics:
+    - query_snippet:
+        usage: LABEL
+        description: "SQL query snippet (first 100 chars)"
+    - calls:
+        usage: COUNTER
+        description: "Total number of times this query was called"
+    - mean_exec_time_ms:
+        usage: GAUGE
+        description: "Mean execution time in milliseconds"
+    - max_exec_time_ms:
+        usage: GAUGE
+        description: "Max execution time in milliseconds"
+    - total_exec_time_ms:
+        usage: COUNTER
+        description: "Total execution time in milliseconds"
+    - rows:
+        usage: COUNTER
+        description: "Total rows returned or affected"
+
+pg_table_seq_scans:
+  query: |
+    SELECT
+      relname              AS table_name,
+      seq_scan,
+      seq_tup_read,
+      idx_scan,
+      n_live_tup           AS live_rows
+    FROM pg_stat_user_tables
+    ORDER BY seq_scan DESC
+    LIMIT 10
+  metrics:
+    - table_name:
+        usage: LABEL
+        description: "Table name"
+    - seq_scan:
+        usage: COUNTER
+        description: "Number of sequential (full table) scans"
+    - seq_tup_read:
+        usage: COUNTER
+        description: "Rows read via sequential scan"
+    - idx_scan:
+        usage: COUNTER
+        description: "Number of index scans"
+    - live_rows:
+        usage: GAUGE
+        description: "Estimated live rows in table"

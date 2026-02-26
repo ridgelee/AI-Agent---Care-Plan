@@ -1,8 +1,66 @@
 import logging
+import os
+import time
+
 from celery import shared_task
 from django.utils import timezone
+from prometheus_client import Counter, Histogram
 
 logger = logging.getLogger(__name__)
+
+# ── Prometheus 指标定义 ────────────────────────────────────────────────────
+#
+# Histogram buckets 按 LLM 延迟特点设计：
+#   1s, 5s, 10s, 30s, 60s(警告), 90s, 120s(严重), 180s, 300s
+#
+LLM_LATENCY = Histogram(
+    'llm_api_duration_seconds',
+    'LLM API call duration in seconds',
+    ['provider', 'model'],
+    buckets=[1, 5, 10, 30, 60, 90, 120, 180, 300],
+)
+
+LLM_CALLS_TOTAL = Counter(
+    'llm_api_calls_total',
+    'Total number of LLM API calls',
+    ['provider', 'model', 'status'],   # status: success / error
+)
+
+LLM_ERRORS_TOTAL = Counter(
+    'llm_api_errors_total',
+    'LLM API errors by type',
+    ['provider', 'error_type'],        # error_type: rate_limit / timeout / network / unknown
+)
+
+CARE_PLAN_DURATION = Histogram(
+    'care_plan_generation_seconds',
+    'Total Care Plan generation time (queue wait + LLM call)',
+    buckets=[5, 15, 30, 60, 90, 120, 180, 300],
+)
+
+
+def _classify_llm_error(exc: Exception) -> str:
+    """
+    根据异常类型判断错误原因：
+      rate_limit  — HTTP 429 / API 配额耗尽
+      timeout     — 连接或读取超时
+      network     — DNS / 连接被拒等网络层错误
+      unknown     — 其他
+    """
+    exc_name = type(exc).__name__
+    exc_str  = str(exc).lower()
+
+    rate_limit_signals = ('ratelimit', 'rate_limit', 'quota', '429', 'too many requests')
+    timeout_signals    = ('timeout', 'timed out', 'deadline')
+    network_signals    = ('connection', 'network', 'dns', 'refused', 'unreachable', 'socket')
+
+    if any(s in exc_name.lower() or s in exc_str for s in rate_limit_signals):
+        return 'rate_limit'
+    if any(s in exc_name.lower() or s in exc_str for s in timeout_signals):
+        return 'timeout'
+    if any(s in exc_name.lower() or s in exc_str for s in network_signals):
+        return 'network'
+    return 'unknown'
 
 
 @shared_task(
@@ -38,16 +96,42 @@ def generate_care_plan(self, order_id: str):
     order.status = 'processing'
     order.save(update_fields=['status', 'updated_at'])
 
+    task_start = time.time()   # Care Plan 整体计时（含重试等待）
+
     try:
         # 1. 构建 Prompt
         prompt = build_prompt(order)
         logger.info("[Celery] Prompt 构建完成，长度=%d", len(prompt))
 
-        # 2. 调用 LLM
+        # 2. 调用 LLM —— 打点计时
         llm = get_llm_service()
-        response = llm.complete(SYSTEM_PROMPT, prompt)
-        content, model = response.content, response.model
-        logger.info("[Celery] LLM 返回成功，内容前100字符: %s", content[:100])
+        provider = os.getenv('LLM_PROVIDER', 'anthropic')
+
+        llm_start = time.time()
+        try:
+            response = llm.complete(SYSTEM_PROMPT, prompt)
+            llm_duration = time.time() - llm_start
+            content, model = response.content, response.model
+
+            # ── 成功打点 ────────────────────────────────────────────────
+            LLM_LATENCY.labels(provider=provider, model=model).observe(llm_duration)
+            LLM_CALLS_TOTAL.labels(provider=provider, model=model, status='success').inc()
+            logger.info("[Celery] LLM 调用成功 provider=%s duration=%.2fs", provider, llm_duration)
+
+        except Exception as llm_exc:
+            llm_duration  = time.time() - llm_start
+            error_type    = _classify_llm_error(llm_exc)
+            model_label   = os.getenv('ANTHROPIC_MODEL', os.getenv('OPENAI_MODEL', 'unknown'))
+
+            # ── 失败打点 ────────────────────────────────────────────────
+            LLM_LATENCY.labels(provider=provider, model=model_label).observe(llm_duration)
+            LLM_CALLS_TOTAL.labels(provider=provider, model=model_label, status='error').inc()
+            LLM_ERRORS_TOTAL.labels(provider=provider, error_type=error_type).inc()
+            logger.warning(
+                "[Celery] LLM 调用失败 provider=%s error_type=%s duration=%.2fs err=%s",
+                provider, error_type, llm_duration, str(llm_exc)
+            )
+            raise llm_exc   # 继续交给外层 retry 逻辑处理
 
         # 3. 写入 CarePlan（已存在则先删除，避免 OneToOne 冲突）
         CarePlan.objects.filter(order=order).delete()
@@ -63,6 +147,8 @@ def generate_care_plan(self, order_id: str):
         order.completed_at = timezone.now()
         order.save(update_fields=['status', 'completed_at', 'updated_at'])
 
+        # ── Care Plan 整体耗时打点 ───────────────────────────────────────
+        CARE_PLAN_DURATION.observe(time.time() - task_start)
         logger.info("[Celery] order_id=%s 处理完成", order_id)
 
     except Exception as exc:

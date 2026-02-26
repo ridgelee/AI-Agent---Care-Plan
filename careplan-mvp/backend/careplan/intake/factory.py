@@ -15,13 +15,14 @@ from .base import BaseIntakeAdapter
 # value: Adapter 类（未实例化）
 def _build_registry() -> dict[str, type[BaseIntakeAdapter]]:
     # 延迟导入，避免循环依赖
-    from .adapters import ClinicBAdapter, HospitalAAdapter, RiversideAdapter, SummitAdapter
+    from .adapters import ClinicBAdapter, HospitalAAdapter, RiversideAdapter, SummitAdapter, GenericAdapter
 
     return {
         "clinic_b":   ClinicBAdapter,
         "hospital_a": HospitalAAdapter,
         "riverside":  RiversideAdapter,
-        "summit":     SummitAdapter,      # ← 新增这一行
+        "summit":     SummitAdapter,
+        "generic":    GenericAdapter,     # 通用格式，适合开发测试
     }
 
 
