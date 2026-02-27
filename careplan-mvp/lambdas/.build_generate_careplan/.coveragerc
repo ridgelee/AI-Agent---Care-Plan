@@ -1,0 +1,11 @@
+[run]
+source = careplan
+omit =
+    careplan/tasks.py
+    careplan/exception_handler.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def call_llm
+    def build_prompt

@@ -1,0 +1,13 @@
+# Lambda 依赖（三个 Lambda 共用同一份）
+# boto3 不需要写，Lambda 运行时自带
+
+Django==4.2.*
+psycopg2-binary==2.9.*
+anthropic
+openai
+django-cors-headers
+djangorestframework
+django-prometheus
+prometheus-client
+celery
+redis

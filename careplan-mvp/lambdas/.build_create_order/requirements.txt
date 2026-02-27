@@ -1,0 +1,16 @@
+Django==4.2
+djangorestframework==3.14
+django-prometheus==2.3.1
+django-cors-headers==4.3
+psycopg2-binary==2.9.9
+anthropic>=0.77.0
+python-dotenv==1.0
+redis==5.0
+celery[redis]==5.3.6
+flower==2.0.1
+
+# Testing
+pytest==8.1.1
+pytest-django==4.8.0
+pytest-cov==5.0.0
+factory-boy==3.3.0
