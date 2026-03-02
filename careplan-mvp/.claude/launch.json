@@ -1,0 +1,35 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "full-stack",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up"],
+      "port": 3000
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "port": 3000
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["backend/manage.py", "runserver", "0.0.0.0:8000"],
+      "port": 8000
+    },
+    {
+      "name": "flower",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "flower"],
+      "port": 5555
+    },
+    {
+      "name": "monitoring",
+      "runtimeExecutable": "docker",
+      "runtimeArgs": ["compose", "up", "prometheus", "grafana"],
+      "port": 9090
+    }
+  ]
+}
